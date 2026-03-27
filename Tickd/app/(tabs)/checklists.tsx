@@ -1,12 +1,21 @@
 import { useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, FlatList,
-  TouchableOpacity, TextInput, Modal, Button
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  TextInput,
+  Modal,
 } from 'react-native';
 
 import {
-  collection, addDoc, getDocs,
-  updateDoc, deleteDoc, doc
+  collection,
+  addDoc,
+  getDocs,
+  updateDoc,
+  deleteDoc,
+  doc,
 } from 'firebase/firestore';
 
 import { db } from '../../firebaseConfig';
@@ -15,12 +24,12 @@ export default function ChecklistsScreen() {
   const [lists, setLists] = useState<any[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [title, setTitle] = useState('');
-  const [category, setCategory] = useState('');
 
-  // Fetch lists
+  const [taskInputs, setTaskInputs] = useState<{ [key: string]: string }>({});
+
   const fetchLists = async () => {
     const snapshot = await getDocs(collection(db, 'checklists'));
-    const data = snapshot.docs.map(doc => ({
+    const data = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     }));
@@ -31,25 +40,40 @@ export default function ChecklistsScreen() {
     fetchLists();
   }, []);
 
-  // Create new list
   const createList = async () => {
     if (!title) return;
 
     await addDoc(collection(db, 'checklists'), {
       title,
-      category,
       tasks: [],
     });
 
     setTitle('');
-    setCategory('');
     setModalVisible(false);
     fetchLists();
   };
 
-  // Toggle task
+  const addTask = async (listId: string) => {
+    const text = taskInputs[listId];
+    if (!text) return;
+
+    const list = lists.find((l) => l.id === listId);
+
+    const updatedTasks = [
+      ...list.tasks,
+      { text, done: false },
+    ];
+
+    await updateDoc(doc(db, 'checklists', listId), {
+      tasks: updatedTasks,
+    });
+
+    setTaskInputs((prev) => ({ ...prev, [listId]: '' }));
+    fetchLists();
+  };
+
   const toggleTask = async (listId: string, index: number) => {
-    const list = lists.find(l => l.id === listId);
+    const list = lists.find((l) => l.id === listId);
 
     const updatedTasks = [...list.tasks];
     updatedTasks[index].done = !updatedTasks[index].done;
@@ -61,59 +85,71 @@ export default function ChecklistsScreen() {
     fetchLists();
   };
 
-  // Delete list
   const deleteList = async (id: string) => {
     await deleteDoc(doc(db, 'checklists', id));
     fetchLists();
   };
 
-  // Add task (simple)
-  const addTask = async (listId: string) => {
-    const list = lists.find(l => l.id === listId);
-
-    const updatedTasks = [
-      ...list.tasks,
-      { text: 'New Task', done: false }
-    ];
-
-    await updateDoc(doc(db, 'checklists', listId), {
-      tasks: updatedTasks,
-    });
-
-    fetchLists();
-  };
-
   return (
     <View style={styles.container}>
+      {/* Create List Button */}
+      <TouchableOpacity
+        style={styles.createButton}
+        onPress={() => setModalVisible(true)}
+      >
+        <Text style={styles.createButtonText}>+ New List</Text>
+      </TouchableOpacity>
 
-      <Button title="Create New List" onPress={() => setModalVisible(true)} />
-
+      {/* Lists */}
       <FlatList
         data={lists}
         keyExtractor={(item) => item.id}
+        contentContainerStyle={{ paddingBottom: 20 }}
         renderItem={({ item }) => (
           <View style={styles.card}>
-            <Text style={styles.title}>
-              {item.title} ({item.category})
-            </Text>
+            <Text style={styles.title}>{item.title}</Text>
 
+            {/* Tasks */}
             {item.tasks?.map((task: any, index: number) => (
               <TouchableOpacity
                 key={index}
                 onPress={() => toggleTask(item.id, index)}
+                style={styles.taskRow}
               >
-                <Text style={{
-                  textDecorationLine: task.done ? 'line-through' : 'none'
-                }}>
+                <Text
+                  style={{
+                    fontSize: 16,
+                    textDecorationLine: task.done ? 'line-through' : 'none',
+                  }}
+                >
                   {task.text}
                 </Text>
               </TouchableOpacity>
             ))}
 
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <Button title="Add Task" onPress={() => addTask(item.id)} />
-              <Button title="Delete" onPress={() => deleteList(item.id)} />
+            {/* Add Task Row */}
+            <View style={styles.addRow}>
+              <TextInput
+                placeholder="Add a task..."
+                value={taskInputs[item.id] || ''}
+                onChangeText={(text) =>
+                  setTaskInputs((prev) => ({
+                    ...prev,
+                    [item.id]: text,
+                  }))
+                }
+                style={styles.taskInput}
+              />
+
+              <TouchableOpacity onPress={() => addTask(item.id)}>
+                <Text style={styles.addButton}>Add</Text>
+              </TouchableOpacity>
             </View>
+
+            {/* Delete */}
+            <TouchableOpacity onPress={() => deleteList(item.id)}>
+              <Text style={styles.delete}>Delete List</Text>
+            </TouchableOpacity>
           </View>
         )}
       />
@@ -121,33 +157,46 @@ export default function ChecklistsScreen() {
       {/* Modal */}
       <Modal visible={modalVisible} animationType="slide">
         <View style={styles.modal}>
-          <Text style={styles.title}>Create Checklist</Text>
+          <Text style={styles.modalTitle}>Create New Checklist</Text>
 
           <TextInput
-            placeholder="Title"
+            placeholder="List title"
             value={title}
             onChangeText={setTitle}
             style={styles.input}
           />
 
-          <TextInput
-            placeholder="Category (Homework, Fitness...)"
-            value={category}
-            onChangeText={setCategory}
-            style={styles.input}
-          />
+          <TouchableOpacity style={styles.createButton} onPress={createList}>
+            <Text style={styles.createButtonText}>Create</Text>
+          </TouchableOpacity>
 
-          <Button title="Create" onPress={createList} />
-          <Button title="Cancel" onPress={() => setModalVisible(false)} />
+          <TouchableOpacity onPress={() => setModalVisible(false)}>
+            <Text style={styles.cancel}>Cancel</Text>
+          </TouchableOpacity>
         </View>
       </Modal>
-
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20 },
+  container: {
+    flex: 1,
+    padding: 20,
+  },
+
+  createButton: {
+    backgroundColor: '#4CAF50',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+
+  createButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
 
   card: {
     padding: 15,
@@ -159,17 +208,59 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 18,
     fontWeight: 'bold',
+    marginBottom: 10,
+  },
+
+  taskRow: {
+    paddingVertical: 6,
+  },
+
+  addRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+  },
+
+  // FIXED: no flex here
+  input: {
+    borderWidth: 1,
+    padding: 10,
+    borderRadius: 6,
+  },
+
+  // separate style for row input
+  taskInput: {
+    borderWidth: 1,
+    padding: 8,
+    borderRadius: 6,
+    flex: 1,
+  },
+
+  addButton: {
+    marginLeft: 10,
+    color: '#4CAF50',
+    fontWeight: 'bold',
+  },
+
+  delete: {
+    marginTop: 10,
+    color: 'red',
   },
 
   modal: {
     flex: 1,
     justifyContent: 'center',
     padding: 20,
+    gap: 15,
   },
 
-  input: {
-    borderWidth: 1,
-    padding: 10,
-    marginVertical: 10,
+  modalTitle: {
+    fontSize: 20,
+    textAlign: 'center',
+  },
+
+  cancel: {
+    marginTop: 10,
+    textAlign: 'center',
   },
 });
