@@ -7,73 +7,91 @@ import {
   TouchableOpacity,
   TextInput,
   Modal,
+  LayoutAnimation,
+  Platform,
+  UIManager,
 } from 'react-native';
 
 import {
   collection,
   addDoc,
-  getDocs,
   updateDoc,
   deleteDoc,
   doc,
+  onSnapshot,
+  query,
+  orderBy,
 } from 'firebase/firestore';
 
 import { db } from '../../firebaseConfig';
+
+if (Platform.OS === 'android') {
+  UIManager.setLayoutAnimationEnabledExperimental?.(true);
+}
 
 export default function ChecklistsScreen() {
   const [lists, setLists] = useState<any[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [title, setTitle] = useState('');
-
   const [taskInputs, setTaskInputs] = useState<{ [key: string]: string }>({});
 
-  const fetchLists = async () => {
-    const snapshot = await getDocs(collection(db, 'checklists'));
-    const data = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
-    setLists(data);
+  const animate = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
   };
 
+  // ✅ REAL-TIME LISTENER
   useEffect(() => {
-    fetchLists();
+    const q = query(collection(db, 'checklists'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      animate();
+
+      const data = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+
+      setLists(data);
+    });
+
+    return () => unsubscribe();
   }, []);
 
+  // CREATE LIST
   const createList = async () => {
     if (!title) return;
 
     await addDoc(collection(db, 'checklists'), {
       title,
       tasks: [],
+      createdAt: Date.now(),
     });
 
     setTitle('');
     setModalVisible(false);
-    fetchLists();
   };
 
+  // ADD TASK
   const addTask = async (listId: string) => {
     const text = taskInputs[listId];
     if (!text) return;
 
     const list = lists.find((l) => l.id === listId);
+    if (!list) return;
 
-    const updatedTasks = [
-      ...list.tasks,
-      { text, done: false },
-    ];
+    const updatedTasks = [...list.tasks, { text, done: false }];
 
     await updateDoc(doc(db, 'checklists', listId), {
       tasks: updatedTasks,
     });
 
     setTaskInputs((prev) => ({ ...prev, [listId]: '' }));
-    fetchLists();
   };
 
+  // TOGGLE TASK
   const toggleTask = async (listId: string, index: number) => {
     const list = lists.find((l) => l.id === listId);
+    if (!list) return;
 
     const updatedTasks = [...list.tasks];
     updatedTasks[index].done = !updatedTasks[index].done;
@@ -81,18 +99,15 @@ export default function ChecklistsScreen() {
     await updateDoc(doc(db, 'checklists', listId), {
       tasks: updatedTasks,
     });
-
-    fetchLists();
   };
 
+  // DELETE LIST
   const deleteList = async (id: string) => {
     await deleteDoc(doc(db, 'checklists', id));
-    fetchLists();
   };
 
   return (
     <View style={styles.container}>
-      {/* Create List Button */}
       <TouchableOpacity
         style={styles.createButton}
         onPress={() => setModalVisible(true)}
@@ -100,7 +115,6 @@ export default function ChecklistsScreen() {
         <Text style={styles.createButtonText}>+ New List</Text>
       </TouchableOpacity>
 
-      {/* Lists */}
       <FlatList
         data={lists}
         keyExtractor={(item) => item.id}
@@ -109,25 +123,26 @@ export default function ChecklistsScreen() {
           <View style={styles.card}>
             <Text style={styles.title}>{item.title}</Text>
 
-            {/* Tasks */}
             {item.tasks?.map((task: any, index: number) => (
               <TouchableOpacity
                 key={index}
                 onPress={() => toggleTask(item.id, index)}
-                style={styles.taskRow}
+                style={[
+                  styles.taskRow,
+                  task.done && styles.taskDone,
+                ]}
               >
                 <Text
-                  style={{
-                    fontSize: 16,
-                    textDecorationLine: task.done ? 'line-through' : 'none',
-                  }}
+                  style={[
+                    styles.taskText,
+                    task.done && styles.taskTextDone,
+                  ]}
                 >
                   {task.text}
                 </Text>
               </TouchableOpacity>
             ))}
 
-            {/* Add Task Row */}
             <View style={styles.addRow}>
               <TextInput
                 placeholder="Add a task..."
@@ -146,7 +161,6 @@ export default function ChecklistsScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Delete */}
             <TouchableOpacity onPress={() => deleteList(item.id)}>
               <Text style={styles.delete}>Delete List</Text>
             </TouchableOpacity>
@@ -154,7 +168,6 @@ export default function ChecklistsScreen() {
         )}
       />
 
-      {/* Modal */}
       <Modal visible={modalVisible} animationType="slide">
         <View style={styles.modal}>
           <Text style={styles.modalTitle}>Create New Checklist</Text>
@@ -180,15 +193,12 @@ export default function ChecklistsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    padding: 20,
-  },
+  container: { flex: 1, padding: 20, backgroundColor: '#F7F7F7' },
 
   createButton: {
     backgroundColor: '#4CAF50',
-    padding: 12,
-    borderRadius: 8,
+    padding: 14,
+    borderRadius: 10,
     alignItems: 'center',
     marginBottom: 10,
   },
@@ -200,9 +210,10 @@ const styles = StyleSheet.create({
 
   card: {
     padding: 15,
-    borderWidth: 1,
-    borderRadius: 10,
+    backgroundColor: 'white',
+    borderRadius: 12,
     marginVertical: 10,
+    elevation: 3,
   },
 
   title: {
@@ -212,7 +223,20 @@ const styles = StyleSheet.create({
   },
 
   taskRow: {
-    paddingVertical: 6,
+    paddingVertical: 8,
+  },
+
+  taskDone: {
+    backgroundColor: '#E8F5E9',
+  },
+
+  taskText: {
+    fontSize: 16,
+  },
+
+  taskTextDone: {
+    textDecorationLine: 'line-through',
+    color: 'gray',
   },
 
   addRow: {
@@ -221,14 +245,12 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
 
-  // FIXED: no flex here
   input: {
     borderWidth: 1,
     padding: 10,
     borderRadius: 6,
   },
 
-  // separate style for row input
   taskInput: {
     borderWidth: 1,
     padding: 8,
@@ -260,7 +282,6 @@ const styles = StyleSheet.create({
   },
 
   cancel: {
-    marginTop: 10,
     textAlign: 'center',
   },
 });
