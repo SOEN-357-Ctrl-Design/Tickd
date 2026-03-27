@@ -39,7 +39,6 @@ export default function ChecklistsScreen() {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
   };
 
-  // ✅ REAL-TIME LISTENER
   useEffect(() => {
     const q = query(collection(db, 'checklists'));
 
@@ -57,7 +56,7 @@ export default function ChecklistsScreen() {
     return () => unsubscribe();
   }, []);
 
-  // CREATE LIST
+  // create list
   const createList = async () => {
     if (!title) return;
 
@@ -71,7 +70,7 @@ export default function ChecklistsScreen() {
     setModalVisible(false);
   };
 
-  // ADD TASK
+  // add task
   const addTask = async (listId: string) => {
     const text = taskInputs[listId];
     if (!text) return;
@@ -88,7 +87,7 @@ export default function ChecklistsScreen() {
     setTaskInputs((prev) => ({ ...prev, [listId]: '' }));
   };
 
-  // TOGGLE TASK
+  // toggle task
   const toggleTask = async (listId: string, index: number) => {
     const list = lists.find((l) => l.id === listId);
     if (!list) return;
@@ -101,7 +100,7 @@ export default function ChecklistsScreen() {
     });
   };
 
-  // DELETE LIST
+  // delete list
   const deleteList = async (id: string) => {
     await deleteDoc(doc(db, 'checklists', id));
   };
