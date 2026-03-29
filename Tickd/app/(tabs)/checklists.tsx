@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Animated,
   LayoutAnimation,
   Modal,
   Platform,
@@ -30,6 +29,7 @@ import {
 import { db } from '../../firebaseConfig';
 import ProgressBar from '../../components/ProgressBar';
 import BadgeNotification from '../../components/BadgeNotification';
+import ChallengeNotification from '../../components/ChallengeNotification';
 import {
   getBadgesUnlockedBetweenCounts,
   getEarnedBadgeIdsForCompletedCount,
@@ -37,6 +37,7 @@ import {
   type Badge,
 } from '../../constants/badges';
 import { useUserProgress } from '../../context/UserProgressContext';
+import type { Challenge } from '../../constants/challenges';
 
 if (Platform.OS === 'android') {
   UIManager.setLayoutAnimationEnabledExperimental?.(true);
@@ -45,7 +46,11 @@ if (Platform.OS === 'android') {
 const USER_PROGRESS_REF = 'userProgress';
 const USER_PROGRESS_DOC = 'default';
 
-type PointsToast = { id: number; message: string };
+function isListComplete(list: { tasks?: { done: boolean }[] }) {
+  const tasks = list.tasks ?? [];
+  if (tasks.length === 0) return false;
+  return tasks.every((t) => t.done);
+}
 
 export default function ChecklistsScreen() {
   const { trackAction, activeTheme } = useUserProgress();
@@ -56,16 +61,20 @@ export default function ChecklistsScreen() {
   const [taskInputs, setTaskInputs] = useState<{ [key: string]: string }>({});
   const [completedListIds, setCompletedListIds] = useState<string[]>([]);
   const [badgeToShow, setBadgeToShow] = useState<Badge | null>(null);
-  const [toasts, setToasts] = useState<PointsToast[]>([]);
-  const toastCounter = useRef(0);
+  const [challengeToShow, setChallengeToShow] = useState<Challenge | null>(null);
+  const pendingChallengesRef = useRef<Challenge[]>([]);
+  const [minimizedIds, setMinimizedIds] = useState<Record<string, boolean>>({});
 
-  const showToast = (message: string) => {
-    const id = ++toastCounter.current;
-    setToasts((prev) => [...prev, { id, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 2500);
-  };
+  const enqueueChallenges = useCallback((completed: Challenge[]) => {
+    if (completed.length === 0) return;
+    pendingChallengesRef.current.push(...completed);
+    setChallengeToShow((current) => current ?? pendingChallengesRef.current.shift() ?? null);
+  }, []);
+
+  const dismissChallengeNotification = useCallback(() => {
+    const next = pendingChallengesRef.current.shift();
+    setChallengeToShow(next ?? null);
+  }, []);
 
   const animate = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -80,6 +89,15 @@ export default function ChecklistsScreen() {
     });
     return () => unsubscribe();
   }, []);
+
+  const sortedLists = useMemo(() => {
+    const visible = lists.filter((l) => !l.deleted);
+    return [...visible].sort((a, b) => {
+      const ac = isListComplete(a) ? 1 : 0;
+      const bc = isListComplete(b) ? 1 : 0;
+      return ac - bc;
+    });
+  }, [lists]);
 
   useEffect(() => {
     const loadProgress = async () => {
@@ -119,9 +137,7 @@ export default function ChecklistsScreen() {
     if (newBadges.length > 0) setBadgeToShow(newBadges[0]);
 
     const result = await trackAction('list_completed');
-    if (result.pointsEarned > 0) {
-      showToast(`+${result.pointsEarned} pts — Challenge complete!`);
-    }
+    enqueueChallenges(result.completedChallenges);
   };
 
   const handleListIncomplete = async (listId: string, currentCompletedIds: string[]) => {
@@ -151,9 +167,7 @@ export default function ChecklistsScreen() {
     setModalVisible(false);
 
     const result = await trackAction('list_created');
-    if (result.pointsEarned > 0) {
-      showToast(`+${result.pointsEarned} pts — Challenge complete!`);
-    }
+    enqueueChallenges(result.completedChallenges);
   };
 
   const addTask = async (listId: string) => {
@@ -183,9 +197,7 @@ export default function ChecklistsScreen() {
 
     if (!wasChecked) {
       const result = await trackAction('task_checked');
-      if (result.pointsEarned > 0) {
-        showToast(`+${result.pointsEarned} pts — Challenge complete!`);
-      }
+      enqueueChallenges(result.completedChallenges);
     }
 
     if (!wasComplete && isNowComplete && updatedTasks.length > 0) {
@@ -210,6 +222,11 @@ export default function ChecklistsScreen() {
     await deleteDoc(doc(db, 'checklists', id));
   };
 
+  const toggleMinimized = (id: string) => {
+    animate();
+    setMinimizedIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
   return (
     <View style={styles.container}>
       <TouchableOpacity
@@ -220,55 +237,87 @@ export default function ChecklistsScreen() {
       </TouchableOpacity>
 
       <FlatList
-        data={lists}
+        data={sortedLists}
         keyExtractor={(item) => item.id}
         contentContainerStyle={{ paddingBottom: 20 }}
         removeClippedSubviews={false}
-        renderItem={({ item }) => (
-          <View style={styles.card}>
-            <Text style={styles.title}>{item.title}</Text>
-
-            <ProgressBar
-              completed={item.tasks?.filter((t: any) => t.done).length ?? 0}
-              total={item.tasks?.length ?? 0}
-            />
-
-            {item.tasks?.map((task: any, index: number) => (
+        renderItem={({ item }) => {
+          const minimized = !!minimizedIds[item.id];
+          return (
+            <View style={styles.card}>
               <Pressable
-                key={index}
-                onPress={() => toggleTask(item.id, index)}
-                android_ripple={{ color: `${activeTheme.primary}33` }}
+                onPress={() => toggleMinimized(item.id)}
                 style={({ pressed }) => [
-                  styles.taskRow,
-                  task.done && { backgroundColor: activeTheme.primaryLight },
-                  Platform.OS === 'ios' && pressed && styles.taskRowPressed,
+                  styles.cardHeader,
+                  Platform.OS === 'ios' && pressed && styles.cardHeaderPressed,
                 ]}
               >
-                <Text style={[styles.taskText, task.done && styles.taskTextDone]}>
-                  {task.text}
-                </Text>
+                <View style={styles.cardHeaderTitleRow}>
+                  <Text style={[styles.title, styles.titleInHeader]} numberOfLines={3}>
+                    {item.title}
+                  </Text>
+                  <View style={styles.cardChevronHit}>
+                    <Ionicons
+                      name={minimized ? 'chevron-forward' : 'chevron-down'}
+                      size={22}
+                      color="#444"
+                    />
+                  </View>
+                </View>
+                <ProgressBar
+                  completed={item.tasks?.filter((t: any) => t.done).length ?? 0}
+                  total={item.tasks?.length ?? 0}
+                />
               </Pressable>
-            ))}
 
-            <View style={styles.addRow}>
-              <TextInput
-                placeholder="Add a task..."
-                value={taskInputs[item.id] || ''}
-                onChangeText={(text) =>
-                  setTaskInputs((prev) => ({ ...prev, [item.id]: text }))
-                }
-                style={styles.taskInput}
-              />
-              <TouchableOpacity onPress={() => addTask(item.id)}>
-                <Text style={[styles.addButton, { color: activeTheme.primary }]}>Add</Text>
-              </TouchableOpacity>
+              {!minimized && (
+                <>
+                  {item.tasks?.map((task: any, index: number) => (
+                    <Pressable
+                      key={index}
+                      onPress={() => toggleTask(item.id, index)}
+                      android_ripple={{ color: `${activeTheme.primary}33` }}
+                      style={({ pressed }) => [
+                        styles.taskRow,
+                        task.done && { backgroundColor: activeTheme.primaryLight },
+                        Platform.OS === 'ios' && pressed && styles.taskRowPressed,
+                      ]}
+                    >
+                      <Text style={[styles.taskText, task.done && styles.taskTextDone]}>
+                        {task.text}
+                      </Text>
+                    </Pressable>
+                  ))}
+
+                  <View style={styles.addRow}>
+                    <TextInput
+                      placeholder="Add a task..."
+                      value={taskInputs[item.id] || ''}
+                      onChangeText={(text) =>
+                        setTaskInputs((prev) => ({ ...prev, [item.id]: text }))
+                      }
+                      style={styles.taskInput}
+                    />
+                    <Pressable
+                      onPress={() => addTask(item.id)}
+                      style={({ pressed }) => [
+                        styles.addButtonWrap,
+                        { opacity: pressed ? 0.65 : 1 },
+                      ]}
+                      hitSlop={8}
+                    >
+                      <Text style={[styles.addButton, { color: activeTheme.primaryDark }]}>Add</Text>
+                    </Pressable>
+                  </View>
+
+                  <TouchableOpacity onPress={() => deleteList(item.id)}>
+                    <Text style={styles.delete}>Delete List</Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
-
-            <TouchableOpacity onPress={() => deleteList(item.id)}>
-              <Text style={styles.delete}>Delete List</Text>
-            </TouchableOpacity>
-          </View>
-        )}
+          );
+        }}
       />
 
       <Modal visible={modalVisible} animationType="slide">
@@ -294,40 +343,12 @@ export default function ChecklistsScreen() {
 
       <BadgeNotification badge={badgeToShow} onDismiss={() => setBadgeToShow(null)} />
 
-      {/* Points toasts */}
-      <View style={styles.toastContainer} pointerEvents="none">
-        {toasts.map((toast) => (
-          <PointsToastItem key={toast.id} message={toast.message} theme={activeTheme} />
-        ))}
-      </View>
+      <ChallengeNotification
+        challenge={challengeToShow}
+        onDismiss={dismissChallengeNotification}
+        topInset={badgeToShow ? 96 : 12}
+      />
     </View>
-  );
-}
-
-function PointsToastItem({
-  message,
-  theme,
-}: {
-  message: string;
-  theme: { primary: string; primaryLight: string };
-}) {
-  const opacity = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.sequence([
-      Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true }),
-      Animated.delay(1800),
-      Animated.timing(opacity, { toValue: 0, duration: 300, useNativeDriver: true }),
-    ]).start();
-  }, [opacity]);
-
-  return (
-    <Animated.View
-      style={[styles.toast, { backgroundColor: theme.primary, opacity }]}
-    >
-      <Ionicons name="star" size={14} color="white" />
-      <Text style={styles.toastText}>{message}</Text>
-    </Animated.View>
   );
 }
 
@@ -352,6 +373,33 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginVertical: 10,
     elevation: 3,
+  },
+
+  cardHeader: {
+    marginBottom: 4,
+  },
+
+  cardHeaderPressed: {
+    opacity: 0.85,
+  },
+
+  cardHeaderTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 8,
+  },
+
+  titleInHeader: {
+    flex: 1,
+    marginBottom: 0,
+  },
+
+  cardChevronHit: {
+    width: 28,
+    alignItems: 'center',
+    paddingTop: 2,
   },
 
   title: {
@@ -396,8 +444,12 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  addButton: {
+  addButtonWrap: {
     marginLeft: 10,
+    justifyContent: 'center',
+  },
+
+  addButton: {
     fontWeight: 'bold',
   },
 
@@ -420,34 +472,5 @@ const styles = StyleSheet.create({
 
   cancel: {
     textAlign: 'center',
-  },
-
-  toastContainer: {
-    position: 'absolute',
-    bottom: 20,
-    left: 20,
-    right: 20,
-    gap: 8,
-    alignItems: 'center',
-  },
-
-  toast: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-  },
-
-  toastText: {
-    color: 'white',
-    fontWeight: '700',
-    fontSize: 13,
   },
 });
