@@ -1,17 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  TouchableOpacity,
-  Pressable,
-  TextInput,
-  Modal,
+  Animated,
   LayoutAnimation,
+  Modal,
   Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
   UIManager,
+  View,
+  FlatList,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 
 import {
   collection,
@@ -34,6 +36,7 @@ import {
   sameStringSet,
   type Badge,
 } from '../../constants/badges';
+import { useUserProgress } from '../../context/UserProgressContext';
 
 if (Platform.OS === 'android') {
   UIManager.setLayoutAnimationEnabledExperimental?.(true);
@@ -42,13 +45,27 @@ if (Platform.OS === 'android') {
 const USER_PROGRESS_REF = 'userProgress';
 const USER_PROGRESS_DOC = 'default';
 
+type PointsToast = { id: number; message: string };
+
 export default function ChecklistsScreen() {
+  const { trackAction, activeTheme } = useUserProgress();
+
   const [lists, setLists] = useState<any[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [title, setTitle] = useState('');
   const [taskInputs, setTaskInputs] = useState<{ [key: string]: string }>({});
   const [completedListIds, setCompletedListIds] = useState<string[]>([]);
   const [badgeToShow, setBadgeToShow] = useState<Badge | null>(null);
+  const [toasts, setToasts] = useState<PointsToast[]>([]);
+  const toastCounter = useRef(0);
+
+  const showToast = (message: string) => {
+    const id = ++toastCounter.current;
+    setToasts((prev) => [...prev, { id, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 2500);
+  };
 
   const animate = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -56,55 +73,38 @@ export default function ChecklistsScreen() {
 
   useEffect(() => {
     const q = query(collection(db, 'checklists'));
-
     const unsubscribe = onSnapshot(q, (snapshot) => {
       animate();
-
-      const data = snapshot.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }));
-
+      const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setLists(data);
     });
-
     return () => unsubscribe();
   }, []);
 
-  // Load user progress once on mount
   useEffect(() => {
     const loadProgress = async () => {
       const ref = doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC);
       const snap = await getDoc(ref);
       if (snap.exists()) {
         const data = snap.data();
-        const completedListIds = data.completedListIds ?? [];
-        const syncedEarned = getEarnedBadgeIdsForCompletedCount(completedListIds.length);
+        const ids = data.completedListIds ?? [];
+        const syncedEarned = getEarnedBadgeIdsForCompletedCount(ids.length);
         const storedEarned = data.earnedBadgeIds ?? [];
-
-        setCompletedListIds(completedListIds);
-
+        setCompletedListIds(ids);
         if (!sameStringSet(storedEarned, syncedEarned)) {
-          await setDoc(
-            ref,
-            { earnedBadgeIds: syncedEarned },
-            { merge: true }
-          );
+          await setDoc(ref, { earnedBadgeIds: syncedEarned }, { merge: true });
         }
       }
     };
-
     loadProgress();
   }, []);
 
-  // Called when a list first reaches 100% completion
   const handleListComplete = async (listId: string, currentCompletedIds: string[]) => {
     if (currentCompletedIds.includes(listId)) return;
 
     const newCompletedIds = [...currentCompletedIds, listId];
     const prevCount = currentCompletedIds.length;
     const newCount = newCompletedIds.length;
-
     const updatedEarnedIds = getEarnedBadgeIdsForCompletedCount(newCount);
     const newBadges = getBadgesUnlockedBetweenCounts(prevCount, newCount);
 
@@ -113,30 +113,28 @@ export default function ChecklistsScreen() {
     await setDoc(
       doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC),
       { completedListIds: newCompletedIds, earnedBadgeIds: updatedEarnedIds },
-      { merge: true }
+      { merge: true },
     );
 
-    if (newBadges.length > 0) {
-      setBadgeToShow(newBadges[0]);
+    if (newBadges.length > 0) setBadgeToShow(newBadges[0]);
+
+    const result = await trackAction('list_completed');
+    if (result.pointsEarned > 0) {
+      showToast(`+${result.pointsEarned} pts — Challenge complete!`);
     }
   };
 
-  // Remove list from completed count when it is no longer 100% done
-  const handleListIncomplete = async (
-    listId: string,
-    currentCompletedIds: string[]
-  ) => {
+  const handleListIncomplete = async (listId: string, currentCompletedIds: string[]) => {
     if (!currentCompletedIds.includes(listId)) return;
 
     const newCompletedIds = currentCompletedIds.filter((id) => id !== listId);
     const updatedEarnedIds = getEarnedBadgeIdsForCompletedCount(newCompletedIds.length);
-
     setCompletedListIds(newCompletedIds);
 
     await setDoc(
       doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC),
       { completedListIds: newCompletedIds, earnedBadgeIds: updatedEarnedIds },
-      { merge: true }
+      { merge: true },
     );
   };
 
@@ -151,9 +149,13 @@ export default function ChecklistsScreen() {
 
     setTitle('');
     setModalVisible(false);
+
+    const result = await trackAction('list_created');
+    if (result.pointsEarned > 0) {
+      showToast(`+${result.pointsEarned} pts — Challenge complete!`);
+    }
   };
 
-  // add task
   const addTask = async (listId: string) => {
     const text = taskInputs[listId];
     if (!text) return;
@@ -162,41 +164,38 @@ export default function ChecklistsScreen() {
     if (!list) return;
 
     const updatedTasks = [...list.tasks, { text, done: false }];
-
-    await updateDoc(doc(db, 'checklists', listId), {
-      tasks: updatedTasks,
-    });
-
+    await updateDoc(doc(db, 'checklists', listId), { tasks: updatedTasks });
     setTaskInputs((prev) => ({ ...prev, [listId]: '' }));
   };
 
-  // toggle task
   const toggleTask = async (listId: string, index: number) => {
     const list = lists.find((l) => l.id === listId);
     if (!list) return;
 
     const updatedTasks = list.tasks.map((t: any, i: number) =>
-      i === index ? { ...t, done: !t.done } : t
+      i === index ? { ...t, done: !t.done } : t,
     );
+    await updateDoc(doc(db, 'checklists', listId), { tasks: updatedTasks });
 
-    await updateDoc(doc(db, 'checklists', listId), {
-      tasks: updatedTasks,
-    });
-
-    // Detect transition from incomplete -> fully complete
     const wasComplete = list.tasks.every((t: any) => t.done);
     const isNowComplete = updatedTasks.every((t: any) => t.done);
+    const wasChecked = list.tasks[index].done;
+
+    if (!wasChecked) {
+      const result = await trackAction('task_checked');
+      if (result.pointsEarned > 0) {
+        showToast(`+${result.pointsEarned} pts — Challenge complete!`);
+      }
+    }
 
     if (!wasComplete && isNowComplete && updatedTasks.length > 0) {
       handleListComplete(listId, completedListIds);
     }
-
     if (wasComplete && !isNowComplete && updatedTasks.length > 0) {
       handleListIncomplete(listId, completedListIds);
     }
   };
 
-  // delete list
   const deleteList = async (id: string) => {
     if (completedListIds.includes(id)) {
       const next = completedListIds.filter((listId) => listId !== id);
@@ -205,7 +204,7 @@ export default function ChecklistsScreen() {
       await setDoc(
         doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC),
         { completedListIds: next, earnedBadgeIds: updatedEarnedIds },
-        { merge: true }
+        { merge: true },
       );
     }
     await deleteDoc(doc(db, 'checklists', id));
@@ -214,7 +213,7 @@ export default function ChecklistsScreen() {
   return (
     <View style={styles.container}>
       <TouchableOpacity
-        style={styles.createButton}
+        style={[styles.createButton, { backgroundColor: activeTheme.primary }]}
         onPress={() => setModalVisible(true)}
       >
         <Text style={styles.createButtonText}>+ New List</Text>
@@ -238,19 +237,14 @@ export default function ChecklistsScreen() {
               <Pressable
                 key={index}
                 onPress={() => toggleTask(item.id, index)}
-                android_ripple={{ color: 'rgba(76, 175, 80, 0.2)' }}
+                android_ripple={{ color: `${activeTheme.primary}33` }}
                 style={({ pressed }) => [
                   styles.taskRow,
-                  task.done && styles.taskDone,
+                  task.done && { backgroundColor: activeTheme.primaryLight },
                   Platform.OS === 'ios' && pressed && styles.taskRowPressed,
                 ]}
               >
-                <Text
-                  style={[
-                    styles.taskText,
-                    task.done && styles.taskTextDone,
-                  ]}
-                >
+                <Text style={[styles.taskText, task.done && styles.taskTextDone]}>
                   {task.text}
                 </Text>
               </Pressable>
@@ -261,16 +255,12 @@ export default function ChecklistsScreen() {
                 placeholder="Add a task..."
                 value={taskInputs[item.id] || ''}
                 onChangeText={(text) =>
-                  setTaskInputs((prev) => ({
-                    ...prev,
-                    [item.id]: text,
-                  }))
+                  setTaskInputs((prev) => ({ ...prev, [item.id]: text }))
                 }
                 style={styles.taskInput}
               />
-
               <TouchableOpacity onPress={() => addTask(item.id)}>
-                <Text style={styles.addButton}>Add</Text>
+                <Text style={[styles.addButton, { color: activeTheme.primary }]}>Add</Text>
               </TouchableOpacity>
             </View>
 
@@ -284,28 +274,60 @@ export default function ChecklistsScreen() {
       <Modal visible={modalVisible} animationType="slide">
         <View style={styles.modal}>
           <Text style={styles.modalTitle}>Create New Checklist</Text>
-
           <TextInput
             placeholder="List title"
             value={title}
             onChangeText={setTitle}
             style={styles.input}
           />
-
-          <TouchableOpacity style={styles.createButton} onPress={createList}>
+          <TouchableOpacity
+            style={[styles.createButton, { backgroundColor: activeTheme.primary }]}
+            onPress={createList}
+          >
             <Text style={styles.createButtonText}>Create</Text>
           </TouchableOpacity>
-
           <TouchableOpacity onPress={() => setModalVisible(false)}>
             <Text style={styles.cancel}>Cancel</Text>
           </TouchableOpacity>
         </View>
       </Modal>
-      <BadgeNotification
-        badge={badgeToShow}
-        onDismiss={() => setBadgeToShow(null)}
-      />
+
+      <BadgeNotification badge={badgeToShow} onDismiss={() => setBadgeToShow(null)} />
+
+      {/* Points toasts */}
+      <View style={styles.toastContainer} pointerEvents="none">
+        {toasts.map((toast) => (
+          <PointsToastItem key={toast.id} message={toast.message} theme={activeTheme} />
+        ))}
+      </View>
     </View>
+  );
+}
+
+function PointsToastItem({
+  message,
+  theme,
+}: {
+  message: string;
+  theme: { primary: string; primaryLight: string };
+}) {
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.sequence([
+      Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.delay(1800),
+      Animated.timing(opacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start();
+  }, [opacity]);
+
+  return (
+    <Animated.View
+      style={[styles.toast, { backgroundColor: theme.primary, opacity }]}
+    >
+      <Ionicons name="star" size={14} color="white" />
+      <Text style={styles.toastText}>{message}</Text>
+    </Animated.View>
   );
 }
 
@@ -313,7 +335,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, padding: 20, backgroundColor: '#F7F7F7' },
 
   createButton: {
-    backgroundColor: '#4CAF50',
     padding: 14,
     borderRadius: 10,
     alignItems: 'center',
@@ -347,10 +368,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.04)',
   },
 
-  taskDone: {
-    backgroundColor: '#E8F5E9',
-  },
-
   taskText: {
     fontSize: 16,
   },
@@ -381,7 +398,6 @@ const styles = StyleSheet.create({
 
   addButton: {
     marginLeft: 10,
-    color: '#4CAF50',
     fontWeight: 'bold',
   },
 
@@ -404,5 +420,34 @@ const styles = StyleSheet.create({
 
   cancel: {
     textAlign: 'center',
+  },
+
+  toastContainer: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    right: 20,
+    gap: 8,
+    alignItems: 'center',
+  },
+
+  toast: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+  },
+
+  toastText: {
+    color: 'white',
+    fontWeight: '700',
+    fontSize: 13,
   },
 });
