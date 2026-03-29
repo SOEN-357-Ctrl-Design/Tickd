@@ -5,6 +5,7 @@ import {
   StyleSheet,
   FlatList,
   TouchableOpacity,
+  Pressable,
   TextInput,
   Modal,
   LayoutAnimation,
@@ -223,6 +224,7 @@ export default function ChecklistsScreen() {
         data={lists}
         keyExtractor={(item) => item.id}
         contentContainerStyle={{ paddingBottom: 20 }}
+        removeClippedSubviews={false}
         renderItem={({ item }) => (
           <View style={styles.card}>
             <Text style={styles.title}>{item.title}</Text>
@@ -233,12 +235,14 @@ export default function ChecklistsScreen() {
             />
 
             {item.tasks?.map((task: any, index: number) => (
-              <TouchableOpacity
+              <Pressable
                 key={index}
                 onPress={() => toggleTask(item.id, index)}
-                style={[
+                android_ripple={{ color: 'rgba(76, 175, 80, 0.2)' }}
+                style={({ pressed }) => [
                   styles.taskRow,
                   task.done && styles.taskDone,
+                  Platform.OS === 'ios' && pressed && styles.taskRowPressed,
                 ]}
               >
                 <Text
@@ -249,7 +253,7 @@ export default function ChecklistsScreen() {
                 >
                   {task.text}
                 </Text>
-              </TouchableOpacity>
+              </Pressable>
             ))}
 
             <View style={styles.addRow}>
@@ -337,6 +341,10 @@ const styles = StyleSheet.create({
 
   taskRow: {
     paddingVertical: 8,
+  },
+
+  taskRowPressed: {
+    backgroundColor: 'rgba(0, 0, 0, 0.04)',
   },
 
   taskDone: {
