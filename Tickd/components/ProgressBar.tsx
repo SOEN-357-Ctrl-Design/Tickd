@@ -18,7 +18,7 @@ export default function ProgressBar({ completed, total }: Props) {
       duration: 450,
       useNativeDriver: false,
     }).start();
-  }, [progress]);
+  }, [progress, animatedWidth]);
 
   if (total === 0) return null;
 

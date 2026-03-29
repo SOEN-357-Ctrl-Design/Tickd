@@ -1,13 +1,16 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
+import { useUserProgress } from '../../context/UserProgressContext';
 
-export default function TabsLayout() {
+function TabNavigator() {
+  const { activeTheme } = useUserProgress();
+
   return (
     <Tabs
       initialRouteName="checklists"
       screenOptions={{
         headerShown: true,
-        tabBarActiveTintColor: '#4CAF50',
+        tabBarActiveTintColor: activeTheme.primary,
       }}
     >
       <Tabs.Screen
@@ -51,4 +54,8 @@ export default function TabsLayout() {
       />
     </Tabs>
   );
+}
+
+export default function TabsLayout() {
+  return <TabNavigator />;
 }

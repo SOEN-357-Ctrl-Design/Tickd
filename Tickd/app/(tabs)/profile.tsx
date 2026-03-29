@@ -7,6 +7,7 @@ import {
   ScrollView,
   ActivityIndicator,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
 import {
@@ -14,8 +15,10 @@ import {
   getEarnedBadgeIdsForCompletedCount,
   sameStringSet,
 } from '../../constants/badges';
+import { useUserProgress } from '../../context/UserProgressContext';
 
 export default function ProfileScreen() {
+  const { points, activeTheme } = useUserProgress();
   const [earnedBadgeIds, setEarnedBadgeIds] = useState<string[]>([]);
   const [completedCount, setCompletedCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -53,25 +56,32 @@ export default function ProfileScreen() {
       {/* Stats row */}
       <View style={styles.statsRow}>
         <View style={styles.statCard}>
-          <Text style={styles.statNumber}>{completedCount}</Text>
+          <Text style={[styles.statNumber, { color: activeTheme.primary }]}>{completedCount}</Text>
           <Text style={styles.statLabel}>Completed</Text>
         </View>
         <View style={styles.statCard}>
-          <Text style={styles.statNumber}>{earnedCount}</Text>
+          <Text style={[styles.statNumber, { color: activeTheme.primary }]}>{earnedCount}</Text>
           <Text style={styles.statLabel}>Badges</Text>
+        </View>
+        <View style={[styles.statCard, { backgroundColor: activeTheme.primaryLight, borderColor: activeTheme.primaryBorder, borderWidth: 1 }]}>
+          <View style={styles.pointsRow}>
+            <Ionicons name="star" size={18} color={activeTheme.primary} />
+            <Text style={[styles.statNumber, { color: activeTheme.primary }]}>{points}</Text>
+          </View>
+          <Text style={styles.statLabel}>Points</Text>
         </View>
       </View>
 
       {/* Next badge hint */}
       {nextBadge && !loading && (
-        <View style={styles.nextBadgeHint}>
+        <View style={[styles.nextBadgeHint, { backgroundColor: activeTheme.primaryLight, borderColor: activeTheme.primaryBorder }]}>
           <Image
             source={nextBadge.image}
             style={styles.nextBadgeImage}
             resizeMode="contain"
           />
           <View style={styles.nextBadgeText}>
-            <Text style={styles.nextBadgeLabel}>Next Badge</Text>
+            <Text style={[styles.nextBadgeLabel, { color: activeTheme.primary }]}>Next Badge</Text>
             <Text style={styles.nextBadgeName}>{nextBadge.name}</Text>
             <Text style={styles.nextBadgeDesc}>{nextBadge.description}</Text>
           </View>
@@ -81,7 +91,7 @@ export default function ProfileScreen() {
       <Text style={styles.sectionTitle}>Badge Gallery</Text>
 
       {loading ? (
-        <ActivityIndicator color="#4CAF50" style={{ marginTop: 20 }} />
+        <ActivityIndicator color={activeTheme.primary} style={{ marginTop: 20 }} />
       ) : (
         <View style={styles.badgeGrid}>
           {BADGES.map((badge) => {
@@ -105,8 +115,8 @@ export default function ProfileScreen() {
                   {badge.description}
                 </Text>
                 {earned && (
-                  <View style={styles.earnedPill}>
-                    <Text style={styles.earnedPillText}>Earned</Text>
+                  <View style={[styles.earnedPill, { backgroundColor: activeTheme.primaryLight, borderColor: activeTheme.primary }]}>
+                    <Text style={[styles.earnedPillText, { color: activeTheme.primaryDark }]}>Earned</Text>
                   </View>
                 )}
               </View>
@@ -158,7 +168,12 @@ const styles = StyleSheet.create({
   statNumber: {
     fontSize: 32,
     fontWeight: 'bold',
-    color: '#4CAF50',
+  },
+
+  pointsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
 
   statLabel: {
