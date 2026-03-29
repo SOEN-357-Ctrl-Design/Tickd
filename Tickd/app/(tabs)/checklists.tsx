@@ -5,6 +5,7 @@ import {
   StyleSheet,
   FlatList,
   TouchableOpacity,
+  Pressable,
   TextInput,
   Modal,
   LayoutAnimation,
@@ -20,20 +21,34 @@ import {
   doc,
   onSnapshot,
   query,
-  orderBy,
+  getDoc,
+  setDoc,
 } from 'firebase/firestore';
 
 import { db } from '../../firebaseConfig';
+import ProgressBar from '../../components/ProgressBar';
+import BadgeNotification from '../../components/BadgeNotification';
+import {
+  getBadgesUnlockedBetweenCounts,
+  getEarnedBadgeIdsForCompletedCount,
+  sameStringSet,
+  type Badge,
+} from '../../constants/badges';
 
 if (Platform.OS === 'android') {
   UIManager.setLayoutAnimationEnabledExperimental?.(true);
 }
+
+const USER_PROGRESS_REF = 'userProgress';
+const USER_PROGRESS_DOC = 'default';
 
 export default function ChecklistsScreen() {
   const [lists, setLists] = useState<any[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [title, setTitle] = useState('');
   const [taskInputs, setTaskInputs] = useState<{ [key: string]: string }>({});
+  const [completedListIds, setCompletedListIds] = useState<string[]>([]);
+  const [badgeToShow, setBadgeToShow] = useState<Badge | null>(null);
 
   const animate = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -45,9 +60,9 @@ export default function ChecklistsScreen() {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       animate();
 
-      const data = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
+      const data = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
       }));
 
       setLists(data);
@@ -56,7 +71,75 @@ export default function ChecklistsScreen() {
     return () => unsubscribe();
   }, []);
 
-  // create list
+  // Load user progress once on mount
+  useEffect(() => {
+    const loadProgress = async () => {
+      const ref = doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC);
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        const data = snap.data();
+        const completedListIds = data.completedListIds ?? [];
+        const syncedEarned = getEarnedBadgeIdsForCompletedCount(completedListIds.length);
+        const storedEarned = data.earnedBadgeIds ?? [];
+
+        setCompletedListIds(completedListIds);
+
+        if (!sameStringSet(storedEarned, syncedEarned)) {
+          await setDoc(
+            ref,
+            { earnedBadgeIds: syncedEarned },
+            { merge: true }
+          );
+        }
+      }
+    };
+
+    loadProgress();
+  }, []);
+
+  // Called when a list first reaches 100% completion
+  const handleListComplete = async (listId: string, currentCompletedIds: string[]) => {
+    if (currentCompletedIds.includes(listId)) return;
+
+    const newCompletedIds = [...currentCompletedIds, listId];
+    const prevCount = currentCompletedIds.length;
+    const newCount = newCompletedIds.length;
+
+    const updatedEarnedIds = getEarnedBadgeIdsForCompletedCount(newCount);
+    const newBadges = getBadgesUnlockedBetweenCounts(prevCount, newCount);
+
+    setCompletedListIds(newCompletedIds);
+
+    await setDoc(
+      doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC),
+      { completedListIds: newCompletedIds, earnedBadgeIds: updatedEarnedIds },
+      { merge: true }
+    );
+
+    if (newBadges.length > 0) {
+      setBadgeToShow(newBadges[0]);
+    }
+  };
+
+  // Remove list from completed count when it is no longer 100% done
+  const handleListIncomplete = async (
+    listId: string,
+    currentCompletedIds: string[]
+  ) => {
+    if (!currentCompletedIds.includes(listId)) return;
+
+    const newCompletedIds = currentCompletedIds.filter((id) => id !== listId);
+    const updatedEarnedIds = getEarnedBadgeIdsForCompletedCount(newCompletedIds.length);
+
+    setCompletedListIds(newCompletedIds);
+
+    await setDoc(
+      doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC),
+      { completedListIds: newCompletedIds, earnedBadgeIds: updatedEarnedIds },
+      { merge: true }
+    );
+  };
+
   const createList = async () => {
     if (!title) return;
 
@@ -92,16 +175,39 @@ export default function ChecklistsScreen() {
     const list = lists.find((l) => l.id === listId);
     if (!list) return;
 
-    const updatedTasks = [...list.tasks];
-    updatedTasks[index].done = !updatedTasks[index].done;
+    const updatedTasks = list.tasks.map((t: any, i: number) =>
+      i === index ? { ...t, done: !t.done } : t
+    );
 
     await updateDoc(doc(db, 'checklists', listId), {
       tasks: updatedTasks,
     });
+
+    // Detect transition from incomplete -> fully complete
+    const wasComplete = list.tasks.every((t: any) => t.done);
+    const isNowComplete = updatedTasks.every((t: any) => t.done);
+
+    if (!wasComplete && isNowComplete && updatedTasks.length > 0) {
+      handleListComplete(listId, completedListIds);
+    }
+
+    if (wasComplete && !isNowComplete && updatedTasks.length > 0) {
+      handleListIncomplete(listId, completedListIds);
+    }
   };
 
   // delete list
   const deleteList = async (id: string) => {
+    if (completedListIds.includes(id)) {
+      const next = completedListIds.filter((listId) => listId !== id);
+      const updatedEarnedIds = getEarnedBadgeIdsForCompletedCount(next.length);
+      setCompletedListIds(next);
+      await setDoc(
+        doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC),
+        { completedListIds: next, earnedBadgeIds: updatedEarnedIds },
+        { merge: true }
+      );
+    }
     await deleteDoc(doc(db, 'checklists', id));
   };
 
@@ -118,17 +224,25 @@ export default function ChecklistsScreen() {
         data={lists}
         keyExtractor={(item) => item.id}
         contentContainerStyle={{ paddingBottom: 20 }}
+        removeClippedSubviews={false}
         renderItem={({ item }) => (
           <View style={styles.card}>
             <Text style={styles.title}>{item.title}</Text>
 
+            <ProgressBar
+              completed={item.tasks?.filter((t: any) => t.done).length ?? 0}
+              total={item.tasks?.length ?? 0}
+            />
+
             {item.tasks?.map((task: any, index: number) => (
-              <TouchableOpacity
+              <Pressable
                 key={index}
                 onPress={() => toggleTask(item.id, index)}
-                style={[
+                android_ripple={{ color: 'rgba(76, 175, 80, 0.2)' }}
+                style={({ pressed }) => [
                   styles.taskRow,
                   task.done && styles.taskDone,
+                  Platform.OS === 'ios' && pressed && styles.taskRowPressed,
                 ]}
               >
                 <Text
@@ -139,7 +253,7 @@ export default function ChecklistsScreen() {
                 >
                   {task.text}
                 </Text>
-              </TouchableOpacity>
+              </Pressable>
             ))}
 
             <View style={styles.addRow}>
@@ -187,6 +301,10 @@ export default function ChecklistsScreen() {
           </TouchableOpacity>
         </View>
       </Modal>
+      <BadgeNotification
+        badge={badgeToShow}
+        onDismiss={() => setBadgeToShow(null)}
+      />
     </View>
   );
 }
@@ -223,6 +341,10 @@ const styles = StyleSheet.create({
 
   taskRow: {
     paddingVertical: 8,
+  },
+
+  taskRowPressed: {
+    backgroundColor: 'rgba(0, 0, 0, 0.04)',
   },
 
   taskDone: {

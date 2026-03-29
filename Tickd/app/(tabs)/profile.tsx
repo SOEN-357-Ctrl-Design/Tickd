@@ -1,20 +1,300 @@
-import { View, Text, StyleSheet } from 'react-native';
+import { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  Image,
+  StyleSheet,
+  ScrollView,
+  ActivityIndicator,
+} from 'react-native';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { db } from '../../firebaseConfig';
+import {
+  BADGES,
+  getEarnedBadgeIdsForCompletedCount,
+  sameStringSet,
+} from '../../constants/badges';
 
 export default function ProfileScreen() {
+  const [earnedBadgeIds, setEarnedBadgeIds] = useState<string[]>([]);
+  const [completedCount, setCompletedCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const ref = doc(db, 'userProgress', 'default');
+
+    const unsubscribe = onSnapshot(ref, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        const completedListIds = data.completedListIds ?? [];
+        const syncedEarned = getEarnedBadgeIdsForCompletedCount(completedListIds.length);
+        const storedEarned = data.earnedBadgeIds ?? [];
+
+        setCompletedCount(completedListIds.length);
+        setEarnedBadgeIds(syncedEarned);
+
+        if (!sameStringSet(storedEarned, syncedEarned)) {
+          void setDoc(ref, { earnedBadgeIds: syncedEarned }, { merge: true });
+        }
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const earnedCount = earnedBadgeIds.length;
+  const nextBadge = BADGES.find((b) => !earnedBadgeIds.includes(b.id));
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.text}>Profile Screen</Text>
-    </View>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <Text style={styles.heading}>My Profile</Text>
+
+      {/* Stats row */}
+      <View style={styles.statsRow}>
+        <View style={styles.statCard}>
+          <Text style={styles.statNumber}>{completedCount}</Text>
+          <Text style={styles.statLabel}>Completed</Text>
+        </View>
+        <View style={styles.statCard}>
+          <Text style={styles.statNumber}>{earnedCount}</Text>
+          <Text style={styles.statLabel}>Badges</Text>
+        </View>
+      </View>
+
+      {/* Next badge hint */}
+      {nextBadge && !loading && (
+        <View style={styles.nextBadgeHint}>
+          <Image
+            source={nextBadge.image}
+            style={styles.nextBadgeImage}
+            resizeMode="contain"
+          />
+          <View style={styles.nextBadgeText}>
+            <Text style={styles.nextBadgeLabel}>Next Badge</Text>
+            <Text style={styles.nextBadgeName}>{nextBadge.name}</Text>
+            <Text style={styles.nextBadgeDesc}>{nextBadge.description}</Text>
+          </View>
+        </View>
+      )}
+
+      <Text style={styles.sectionTitle}>Badge Gallery</Text>
+
+      {loading ? (
+        <ActivityIndicator color="#4CAF50" style={{ marginTop: 20 }} />
+      ) : (
+        <View style={styles.badgeGrid}>
+          {BADGES.map((badge) => {
+            const earned = earnedBadgeIds.includes(badge.id);
+            return (
+              <View
+                key={badge.id}
+                style={[styles.badgeCard, !earned && styles.badgeCardLocked]}
+              >
+                <View style={styles.badgeImageWrap}>
+                  <Image
+                    source={badge.image}
+                    style={[styles.badgeImage, !earned && styles.badgeImageLocked]}
+                    resizeMode="contain"
+                  />
+                </View>
+                <Text style={[styles.badgeName, !earned && styles.badgeNameLocked]}>
+                  {badge.name}
+                </Text>
+                <Text style={[styles.badgeDesc, !earned && styles.badgeDescLocked]}>
+                  {badge.description}
+                </Text>
+                {earned && (
+                  <View style={styles.earnedPill}>
+                    <Text style={styles.earnedPillText}>Earned</Text>
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: '#F7F7F7',
   },
-  text: {
-    fontSize: 20,
+
+  content: {
+    padding: 20,
+    paddingBottom: 40,
+  },
+
+  heading: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    marginBottom: 20,
+    color: '#1A1A1A',
+  },
+
+  statsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+
+  statCard: {
+    flex: 1,
+    backgroundColor: 'white',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+  },
+
+  statNumber: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#4CAF50',
+  },
+
+  statLabel: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 2,
+  },
+
+  nextBadgeHint: {
+    backgroundColor: '#E8F5E9',
+    borderRadius: 12,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#C8E6C9',
+  },
+
+  nextBadgeImage: {
+    width: 44,
+    height: 44,
+  },
+
+  nextBadgeText: {
+    flex: 1,
+  },
+
+  nextBadgeLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#4CAF50',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 1,
+  },
+
+  nextBadgeName: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: '#1A1A1A',
+  },
+
+  nextBadgeDesc: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 1,
+  },
+
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1A1A1A',
+    marginBottom: 14,
+  },
+
+  badgeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+
+  badgeCard: {
+    width: '47%',
+    backgroundColor: 'white',
+    borderRadius: 14,
+    padding: 16,
+    alignItems: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+  },
+
+  badgeCardLocked: {
+    backgroundColor: '#FAFAFA',
+    elevation: 0,
+    shadowOpacity: 0,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+
+  badgeImageWrap: {
+    width: 64,
+    height: 64,
+    marginBottom: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  badgeImage: {
+    width: 64,
+    height: 64,
+  },
+
+  badgeImageLocked: {
+    opacity: 0.28,
+  },
+
+  badgeName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1A1A1A',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+
+  badgeNameLocked: {
+    color: '#BDBDBD',
+  },
+
+  badgeDesc: {
+    fontSize: 11,
+    color: '#666',
+    textAlign: 'center',
+  },
+
+  badgeDescLocked: {
+    color: '#C8C8C8',
+  },
+
+  earnedPill: {
+    marginTop: 8,
+    backgroundColor: '#E8F5E9',
+    paddingHorizontal: 10,
+    paddingVertical: 2,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#4CAF50',
+  },
+
+  earnedPillText: {
+    fontSize: 10,
+    color: '#2E7D32',
+    fontWeight: '700',
   },
 });
