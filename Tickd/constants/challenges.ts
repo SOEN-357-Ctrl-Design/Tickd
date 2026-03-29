@@ -74,15 +74,85 @@ export const CHALLENGES: Challenge[] = [
   },
 ];
 
-export function getDayKey(date: Date = new Date()): string {
-  return date.toISOString().slice(0, 10);
+const CHALLENGE_TIMEZONE = 'America/New_York';
+
+const easternDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: CHALLENGE_TIMEZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+const easternWeekdayFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: CHALLENGE_TIMEZONE,
+  weekday: 'short',
+});
+
+const EASTERN_WEEKDAY_TO_OFFSET: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+function daysInMonth(year: number, month1To12: number): number {
+  return new Date(year, month1To12, 0).getDate();
 }
 
+function parseEasternYmd(date: Date): { y: number; m: number; d: number } {
+  const s = easternDateFormatter.format(date);
+  const [y, m, d] = s.split('-').map(Number);
+  return { y, m, d };
+}
+
+function ymdToKey(y: number, m: number, d: number): string {
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+function addDaysToEasternYmd(
+  y: number,
+  m: number,
+  d: number,
+  delta: number,
+): { y: number; m: number; d: number } {
+  let dd = d + delta;
+  let mm = m;
+  let yy = y;
+  while (dd < 1) {
+    mm -= 1;
+    if (mm < 1) {
+      mm = 12;
+      yy -= 1;
+    }
+    dd += daysInMonth(yy, mm);
+  }
+  while (dd > daysInMonth(yy, mm)) {
+    dd -= daysInMonth(yy, mm);
+    mm += 1;
+    if (mm > 12) {
+      mm = 1;
+      yy += 1;
+    }
+  }
+  return { y: yy, m: mm, d: dd };
+}
+
+export function getDayKey(date: Date = new Date()): string {
+  const { y, m, d } = parseEasternYmd(date);
+  return ymdToKey(y, m, d);
+}
+
+// Start of week is Sunday and use YYYY-MM-DD format for the key
 export function getWeekKey(date: Date = new Date()): string {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - d.getDay());
-  return d.toISOString().slice(0, 10);
+  const { y, m, d } = parseEasternYmd(date);
+  const weekdayPart = easternWeekdayFormatter.formatToParts(date).find((p) => p.type === 'weekday')
+    ?.value;
+  const offset = weekdayPart ? EASTERN_WEEKDAY_TO_OFFSET[weekdayPart] ?? 0 : 0;
+  const sun = addDaysToEasternYmd(y, m, d, -offset);
+  return ymdToKey(sun.y, sun.m, sun.d);
 }
 
 export function isChallengeCompleted(
