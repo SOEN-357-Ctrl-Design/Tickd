@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Keyboard,
   LayoutAnimation,
   Modal,
@@ -72,6 +73,10 @@ export default function ChecklistsScreen() {
   const [challengeToShow, setChallengeToShow] = useState<Challenge | null>(null);
   const pendingChallengesRef = useRef<Challenge[]>([]);
   const [minimizedIds, setMinimizedIds] = useState<Record<string, boolean>>({});
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Record<string, boolean>>({});
+  const [undoDelete, setUndoDelete] = useState<{ id: string; title: string } | null>(null);
+  const deleteTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const undoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const normalizedSearchQuery = searchQuery.trim();
 
   const enqueueChallenges = useCallback((completed: Challenge[]) => {
@@ -89,6 +94,11 @@ export default function ChecklistsScreen() {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
   };
 
+  function clearPendingDeleteTimers() {
+    Object.values(deleteTimersRef.current).forEach((timer) => clearTimeout(timer));
+    if (undoToastTimerRef.current) clearTimeout(undoToastTimerRef.current);
+  }
+
   useEffect(() => {
     const q = query(collection(db, 'checklists'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -102,7 +112,7 @@ export default function ChecklistsScreen() {
 
   const filteredLists = useMemo(() => {
     const queryText = searchQuery.trim().toLowerCase();
-    const visible = lists.filter((l) => !l.deleted);
+    const visible = lists.filter((l) => !l.deleted && !pendingDeleteIds[l.id]);
     if (!queryText) return visible;
 
     return visible.filter((list) => {
@@ -112,7 +122,7 @@ export default function ChecklistsScreen() {
       );
       return titleMatch || taskMatch;
     });
-  }, [lists, searchQuery]);
+  }, [lists, searchQuery, pendingDeleteIds]);
 
   const sortedLists = useMemo(() => {
     const visible = filteredLists;
@@ -139,6 +149,12 @@ export default function ChecklistsScreen() {
       }
     };
     loadProgress();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearPendingDeleteTimers();
+    };
   }, []);
 
   const handleListComplete = async (listId: string, currentCompletedIds: string[]) => {
@@ -232,7 +248,7 @@ export default function ChecklistsScreen() {
     }
   };
 
-  const deleteList = async (id: string) => {
+  const permanentlyDeleteList = async (id: string) => {
     if (completedListIds.includes(id)) {
       const next = completedListIds.filter((listId) => listId !== id);
       const updatedEarnedIds = getEarnedBadgeIdsForCompletedCount(next.length);
@@ -244,6 +260,61 @@ export default function ChecklistsScreen() {
       );
     }
     await deleteDoc(doc(db, 'checklists', id));
+  };
+
+  const queueDeleteList = (id: string, listTitle: string) => {
+    const existingTimer = deleteTimersRef.current[id];
+    if (existingTimer) clearTimeout(existingTimer);
+
+    setPendingDeleteIds((prev) => ({ ...prev, [id]: true }));
+    setUndoDelete({ id, title: listTitle });
+
+    if (undoToastTimerRef.current) clearTimeout(undoToastTimerRef.current);
+
+    deleteTimersRef.current[id] = setTimeout(() => {
+      void permanentlyDeleteList(id);
+      setPendingDeleteIds((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setUndoDelete((current) => (current?.id === id ? null : current));
+      delete deleteTimersRef.current[id];
+    }, 5000);
+
+    undoToastTimerRef.current = setTimeout(() => {
+      setUndoDelete((current) => (current?.id === id ? null : current));
+    }, 5000);
+  };
+
+  const confirmDeleteList = (id: string, listTitle: string) => {
+    Alert.alert(
+      'Delete list?',
+      `"${listTitle}" will be deleted. You can undo for a few seconds.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => queueDeleteList(id, listTitle) },
+      ],
+    );
+  };
+
+  const handleUndoDelete = () => {
+    if (!undoDelete) return;
+    const timer = deleteTimersRef.current[undoDelete.id];
+    if (timer) {
+      clearTimeout(timer);
+      delete deleteTimersRef.current[undoDelete.id];
+    }
+    setPendingDeleteIds((prev) => {
+      const next = { ...prev };
+      delete next[undoDelete.id];
+      return next;
+    });
+    if (undoToastTimerRef.current) {
+      clearTimeout(undoToastTimerRef.current);
+      undoToastTimerRef.current = null;
+    }
+    setUndoDelete(null);
   };
 
   const toggleMinimized = (id: string) => {
@@ -394,7 +465,7 @@ export default function ChecklistsScreen() {
                     </Pressable>
                   </View>
 
-                  <TouchableOpacity onPress={() => deleteList(item.id)}>
+                  <TouchableOpacity onPress={() => confirmDeleteList(item.id, String(item.title ?? ''))}>
                     <Text style={styles.delete}>Delete List</Text>
                   </TouchableOpacity>
                 </>
@@ -432,6 +503,17 @@ export default function ChecklistsScreen() {
         onDismiss={dismissChallengeNotification}
         topInset={badgeToShow ? 96 : 12}
       />
+
+      {undoDelete ? (
+        <View style={styles.undoToast}>
+          <Text style={styles.undoToastText} numberOfLines={1}>
+            List deleted
+          </Text>
+          <Pressable onPress={handleUndoDelete} hitSlop={8}>
+            <Text style={[styles.undoToastAction, { color: activeTheme.primary }]}>Undo</Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -605,5 +687,31 @@ const styles = StyleSheet.create({
 
   cancel: {
     textAlign: 'center',
+  },
+
+  undoToast: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    bottom: 18,
+    backgroundColor: '#1F2937',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+
+  undoToastText: {
+    color: 'white',
+    fontSize: 14,
+    flex: 1,
+  },
+
+  undoToastAction: {
+    fontSize: 14,
+    fontWeight: '700',
   },
 });
