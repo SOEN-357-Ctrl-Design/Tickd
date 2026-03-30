@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Keyboard,
   LayoutAnimation,
   Modal,
   Platform,
@@ -52,18 +54,25 @@ function isListComplete(list: { tasks?: { done: boolean }[] }) {
   return tasks.every((t) => t.done);
 }
 
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export default function ChecklistsScreen() {
   const { trackAction, activeTheme } = useUserProgress();
 
   const [lists, setLists] = useState<any[]>([]);
+  const [loadingLists, setLoadingLists] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [title, setTitle] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [taskInputs, setTaskInputs] = useState<{ [key: string]: string }>({});
   const [completedListIds, setCompletedListIds] = useState<string[]>([]);
   const [badgeToShow, setBadgeToShow] = useState<Badge | null>(null);
   const [challengeToShow, setChallengeToShow] = useState<Challenge | null>(null);
   const pendingChallengesRef = useRef<Challenge[]>([]);
   const [minimizedIds, setMinimizedIds] = useState<Record<string, boolean>>({});
+  const normalizedSearchQuery = searchQuery.trim();
 
   const enqueueChallenges = useCallback((completed: Challenge[]) => {
     if (completed.length === 0) return;
@@ -86,18 +95,33 @@ export default function ChecklistsScreen() {
       animate();
       const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setLists(data);
+      setLoadingLists(false);
     });
     return () => unsubscribe();
   }, []);
 
-  const sortedLists = useMemo(() => {
+  const filteredLists = useMemo(() => {
+    const queryText = searchQuery.trim().toLowerCase();
     const visible = lists.filter((l) => !l.deleted);
+    if (!queryText) return visible;
+
+    return visible.filter((list) => {
+      const titleMatch = String(list.title ?? '').toLowerCase().includes(queryText);
+      const taskMatch = (list.tasks ?? []).some((task: any) =>
+        String(task?.text ?? '').toLowerCase().includes(queryText),
+      );
+      return titleMatch || taskMatch;
+    });
+  }, [lists, searchQuery]);
+
+  const sortedLists = useMemo(() => {
+    const visible = filteredLists;
     return [...visible].sort((a, b) => {
       const ac = isListComplete(a) ? 1 : 0;
       const bc = isListComplete(b) ? 1 : 0;
       return ac - bc;
     });
-  }, [lists]);
+  }, [filteredLists]);
 
   useEffect(() => {
     const loadProgress = async () => {
@@ -227,8 +251,47 @@ export default function ChecklistsScreen() {
     setMinimizedIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
+  const renderHighlightedTaskText = (text: string) => {
+    if (!normalizedSearchQuery) return text;
+
+    const safeQuery = escapeRegExp(normalizedSearchQuery);
+    const parts = String(text).split(new RegExp(`(${safeQuery})`, 'ig'));
+    const target = normalizedSearchQuery.toLowerCase();
+
+    return parts.map((part, index) => {
+      const isMatch = part.toLowerCase() === target;
+      return (
+        <Text
+          key={`${part}-${index}`}
+          style={
+            isMatch
+              ? [
+                  styles.taskHighlight,
+                  {
+                    backgroundColor: activeTheme.primaryLight,
+                    color: activeTheme.primaryDark,
+                  },
+                ]
+              : undefined
+          }
+        >
+          {part}
+        </Text>
+      );
+    });
+  };
+
   return (
     <View style={styles.container}>
+      <TextInput
+        placeholder="Search lists or tasks..."
+        value={searchQuery}
+        onChangeText={setSearchQuery}
+        style={styles.searchInput}
+        returnKeyType="search"
+        onSubmitEditing={Keyboard.dismiss}
+      />
+
       <TouchableOpacity
         style={[styles.createButton, { backgroundColor: activeTheme.primary }]}
         onPress={() => setModalVisible(true)}
@@ -236,11 +299,32 @@ export default function ChecklistsScreen() {
         <Text style={styles.createButtonText}>+ New List</Text>
       </TouchableOpacity>
 
+      {loadingLists ? (
+        <ActivityIndicator style={styles.loadingIndicator} color={activeTheme.primary} />
+      ) : null}
+
       <FlatList
         data={sortedLists}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={{ paddingBottom: 20 }}
+        contentContainerStyle={[
+          styles.listContent,
+          !loadingLists && sortedLists.length === 0 ? styles.listContentEmpty : null,
+        ]}
         removeClippedSubviews={false}
+        ListEmptyComponent={
+          !loadingLists ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateTitle}>
+                {searchQuery.trim() ? 'No matching lists or tasks' : 'No checklists yet'}
+              </Text>
+              <Text style={styles.emptyStateText}>
+                {searchQuery.trim()
+                  ? 'Try a different keyword.'
+                  : 'Tap "+ New List" to create your first checklist.'}
+              </Text>
+            </View>
+          ) : null
+        }
         renderItem={({ item }) => {
           const minimized = !!minimizedIds[item.id];
           return (
@@ -284,7 +368,7 @@ export default function ChecklistsScreen() {
                       ]}
                     >
                       <Text style={[styles.taskText, task.done && styles.taskTextDone]}>
-                        {task.text}
+                        {renderHighlightedTaskText(task.text)}
                       </Text>
                     </Pressable>
                   ))}
@@ -367,6 +451,50 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
+  searchInput: {
+    backgroundColor: 'white',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+    fontSize: 15,
+  },
+
+  loadingIndicator: {
+    marginVertical: 12,
+  },
+
+  listContent: {
+    paddingBottom: 20,
+  },
+
+  listContentEmpty: {
+    flexGrow: 1,
+  },
+
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+
+  emptyStateTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1A1A1A',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+
+  emptyStateText: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+  },
+
   card: {
     padding: 15,
     backgroundColor: 'white',
@@ -423,6 +551,11 @@ const styles = StyleSheet.create({
   taskTextDone: {
     textDecorationLine: 'line-through',
     color: 'gray',
+  },
+
+  taskHighlight: {
+    fontWeight: '700',
+    borderRadius: 4,
   },
 
   addRow: {
