@@ -16,6 +16,7 @@ import {
   FlatList,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   collection,
@@ -48,6 +49,7 @@ if (Platform.OS === 'android') {
 
 const USER_PROGRESS_REF = 'userProgress';
 const USER_PROGRESS_DOC = 'default';
+const MINIMIZED_IDS_STORAGE_KEY = 'checklists:minimizedIds';
 
 function isListComplete(list: { tasks?: { done: boolean }[] }) {
   const tasks = list.tasks ?? [];
@@ -156,6 +158,48 @@ export default function ChecklistsScreen() {
       clearPendingDeleteTimers();
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadMinimizedIds = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(MINIMIZED_IDS_STORAGE_KEY);
+        if (!stored || !active) return;
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === 'object') {
+          setMinimizedIds(parsed as Record<string, boolean>);
+        }
+      } catch {
+      }
+    };
+    void loadMinimizedIds();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    void AsyncStorage.setItem(MINIMIZED_IDS_STORAGE_KEY, JSON.stringify(minimizedIds));
+  }, [minimizedIds]);
+
+  useEffect(() => {
+    if (lists.length === 0) return;
+    setMinimizedIds((prev) => {
+      const validIds = new Set(lists.map((list) => list.id));
+      const next: Record<string, boolean> = {};
+      let changed = false;
+
+      Object.entries(prev).forEach(([id, minimized]) => {
+        if (validIds.has(id)) {
+          next[id] = minimized;
+          return;
+        }
+        changed = true;
+      });
+
+      return changed ? next : prev;
+    });
+  }, [lists]);
 
   const handleListComplete = async (listId: string, currentCompletedIds: string[]) => {
     if (currentCompletedIds.includes(listId)) return;
