@@ -234,15 +234,16 @@ const styles = StyleSheet.create({
   badgeGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    justifyContent: 'space-between',
   },
 
   badgeCard: {
-    width: '47%',
+    width: '48%',
     backgroundColor: 'white',
     borderRadius: 14,
     padding: 16,
     alignItems: 'center',
+    marginBottom: 12,
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },

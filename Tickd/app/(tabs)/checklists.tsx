@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
+  Keyboard,
   LayoutAnimation,
   Modal,
   Platform,
@@ -13,6 +16,7 @@ import {
   FlatList,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   collection,
@@ -45,6 +49,7 @@ if (Platform.OS === 'android') {
 
 const USER_PROGRESS_REF = 'userProgress';
 const USER_PROGRESS_DOC = 'default';
+const MINIMIZED_IDS_STORAGE_KEY = 'checklists:minimizedIds';
 
 function isListComplete(list: { tasks?: { done: boolean }[] }) {
   const tasks = list.tasks ?? [];
@@ -52,18 +57,29 @@ function isListComplete(list: { tasks?: { done: boolean }[] }) {
   return tasks.every((t) => t.done);
 }
 
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export default function ChecklistsScreen() {
   const { trackAction, activeTheme } = useUserProgress();
 
   const [lists, setLists] = useState<any[]>([]);
+  const [loadingLists, setLoadingLists] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [title, setTitle] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [taskInputs, setTaskInputs] = useState<{ [key: string]: string }>({});
   const [completedListIds, setCompletedListIds] = useState<string[]>([]);
   const [badgeToShow, setBadgeToShow] = useState<Badge | null>(null);
   const [challengeToShow, setChallengeToShow] = useState<Challenge | null>(null);
   const pendingChallengesRef = useRef<Challenge[]>([]);
   const [minimizedIds, setMinimizedIds] = useState<Record<string, boolean>>({});
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Record<string, boolean>>({});
+  const [undoDelete, setUndoDelete] = useState<{ id: string; title: string } | null>(null);
+  const deleteTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const undoToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const normalizedSearchQuery = searchQuery.trim();
 
   const enqueueChallenges = useCallback((completed: Challenge[]) => {
     if (completed.length === 0) return;
@@ -80,24 +96,44 @@ export default function ChecklistsScreen() {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
   };
 
+  function clearPendingDeleteTimers() {
+    Object.values(deleteTimersRef.current).forEach((timer) => clearTimeout(timer));
+    if (undoToastTimerRef.current) clearTimeout(undoToastTimerRef.current);
+  }
+
   useEffect(() => {
     const q = query(collection(db, 'checklists'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       animate();
       const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setLists(data);
+      setLoadingLists(false);
     });
     return () => unsubscribe();
   }, []);
 
+  const filteredLists = useMemo(() => {
+    const queryText = searchQuery.trim().toLowerCase();
+    const visible = lists.filter((l) => !l.deleted && !pendingDeleteIds[l.id]);
+    if (!queryText) return visible;
+
+    return visible.filter((list) => {
+      const titleMatch = String(list.title ?? '').toLowerCase().includes(queryText);
+      const taskMatch = (list.tasks ?? []).some((task: any) =>
+        String(task?.text ?? '').toLowerCase().includes(queryText),
+      );
+      return titleMatch || taskMatch;
+    });
+  }, [lists, searchQuery, pendingDeleteIds]);
+
   const sortedLists = useMemo(() => {
-    const visible = lists.filter((l) => !l.deleted);
+    const visible = filteredLists;
     return [...visible].sort((a, b) => {
       const ac = isListComplete(a) ? 1 : 0;
       const bc = isListComplete(b) ? 1 : 0;
       return ac - bc;
     });
-  }, [lists]);
+  }, [filteredLists]);
 
   useEffect(() => {
     const loadProgress = async () => {
@@ -116,6 +152,54 @@ export default function ChecklistsScreen() {
     };
     loadProgress();
   }, []);
+
+  useEffect(() => {
+    return () => {
+      clearPendingDeleteTimers();
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const loadMinimizedIds = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(MINIMIZED_IDS_STORAGE_KEY);
+        if (!stored || !active) return;
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === 'object') {
+          setMinimizedIds(parsed as Record<string, boolean>);
+        }
+      } catch {
+      }
+    };
+    void loadMinimizedIds();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    void AsyncStorage.setItem(MINIMIZED_IDS_STORAGE_KEY, JSON.stringify(minimizedIds));
+  }, [minimizedIds]);
+
+  useEffect(() => {
+    if (lists.length === 0) return;
+    setMinimizedIds((prev) => {
+      const validIds = new Set(lists.map((list) => list.id));
+      const next: Record<string, boolean> = {};
+      let changed = false;
+
+      Object.entries(prev).forEach(([id, minimized]) => {
+        if (validIds.has(id)) {
+          next[id] = minimized;
+          return;
+        }
+        changed = true;
+      });
+
+      return changed ? next : prev;
+    });
+  }, [lists]);
 
   const handleListComplete = async (listId: string, currentCompletedIds: string[]) => {
     if (currentCompletedIds.includes(listId)) return;
@@ -208,7 +292,7 @@ export default function ChecklistsScreen() {
     }
   };
 
-  const deleteList = async (id: string) => {
+  const permanentlyDeleteList = async (id: string) => {
     if (completedListIds.includes(id)) {
       const next = completedListIds.filter((listId) => listId !== id);
       const updatedEarnedIds = getEarnedBadgeIdsForCompletedCount(next.length);
@@ -222,13 +306,107 @@ export default function ChecklistsScreen() {
     await deleteDoc(doc(db, 'checklists', id));
   };
 
+  const queueDeleteList = (id: string, listTitle: string) => {
+    const existingTimer = deleteTimersRef.current[id];
+    if (existingTimer) clearTimeout(existingTimer);
+
+    setPendingDeleteIds((prev) => ({ ...prev, [id]: true }));
+    setUndoDelete({ id, title: listTitle });
+
+    if (undoToastTimerRef.current) clearTimeout(undoToastTimerRef.current);
+
+    deleteTimersRef.current[id] = setTimeout(() => {
+      void permanentlyDeleteList(id);
+      setPendingDeleteIds((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setUndoDelete((current) => (current?.id === id ? null : current));
+      delete deleteTimersRef.current[id];
+    }, 5000);
+
+    undoToastTimerRef.current = setTimeout(() => {
+      setUndoDelete((current) => (current?.id === id ? null : current));
+    }, 5000);
+  };
+
+  const confirmDeleteList = (id: string, listTitle: string) => {
+    Alert.alert(
+      'Delete list?',
+      `"${listTitle}" will be deleted. You can undo for a few seconds.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => queueDeleteList(id, listTitle) },
+      ],
+    );
+  };
+
+  const handleUndoDelete = () => {
+    if (!undoDelete) return;
+    const timer = deleteTimersRef.current[undoDelete.id];
+    if (timer) {
+      clearTimeout(timer);
+      delete deleteTimersRef.current[undoDelete.id];
+    }
+    setPendingDeleteIds((prev) => {
+      const next = { ...prev };
+      delete next[undoDelete.id];
+      return next;
+    });
+    if (undoToastTimerRef.current) {
+      clearTimeout(undoToastTimerRef.current);
+      undoToastTimerRef.current = null;
+    }
+    setUndoDelete(null);
+  };
+
   const toggleMinimized = (id: string) => {
     animate();
     setMinimizedIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
+  const renderHighlightedTaskText = (text: string) => {
+    if (!normalizedSearchQuery) return text;
+
+    const safeQuery = escapeRegExp(normalizedSearchQuery);
+    const parts = String(text).split(new RegExp(`(${safeQuery})`, 'ig'));
+    const target = normalizedSearchQuery.toLowerCase();
+
+    return parts.map((part, index) => {
+      const isMatch = part.toLowerCase() === target;
+      return (
+        <Text
+          key={`${part}-${index}`}
+          style={
+            isMatch
+              ? [
+                  styles.taskHighlight,
+                  {
+                    backgroundColor: activeTheme.primaryLight,
+                    color: activeTheme.primaryDark,
+                  },
+                ]
+              : undefined
+          }
+        >
+          {part}
+        </Text>
+      );
+    });
+  };
+
   return (
     <View style={styles.container}>
+      <TextInput
+        placeholder="Search lists or tasks..."
+        value={searchQuery}
+        onChangeText={setSearchQuery}
+        style={styles.searchInput}
+        returnKeyType="search"
+        onSubmitEditing={Keyboard.dismiss}
+      />
+
       <TouchableOpacity
         style={[styles.createButton, { backgroundColor: activeTheme.primary }]}
         onPress={() => setModalVisible(true)}
@@ -236,11 +414,32 @@ export default function ChecklistsScreen() {
         <Text style={styles.createButtonText}>+ New List</Text>
       </TouchableOpacity>
 
+      {loadingLists ? (
+        <ActivityIndicator style={styles.loadingIndicator} color={activeTheme.primary} />
+      ) : null}
+
       <FlatList
         data={sortedLists}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={{ paddingBottom: 20 }}
+        contentContainerStyle={[
+          styles.listContent,
+          !loadingLists && sortedLists.length === 0 ? styles.listContentEmpty : null,
+        ]}
         removeClippedSubviews={false}
+        ListEmptyComponent={
+          !loadingLists ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateTitle}>
+                {searchQuery.trim() ? 'No matching lists or tasks' : 'No checklists yet'}
+              </Text>
+              <Text style={styles.emptyStateText}>
+                {searchQuery.trim()
+                  ? 'Try a different keyword.'
+                  : 'Tap "+ New List" to create your first checklist.'}
+              </Text>
+            </View>
+          ) : null
+        }
         renderItem={({ item }) => {
           const minimized = !!minimizedIds[item.id];
           return (
@@ -284,7 +483,7 @@ export default function ChecklistsScreen() {
                       ]}
                     >
                       <Text style={[styles.taskText, task.done && styles.taskTextDone]}>
-                        {task.text}
+                        {renderHighlightedTaskText(task.text)}
                       </Text>
                     </Pressable>
                   ))}
@@ -310,7 +509,7 @@ export default function ChecklistsScreen() {
                     </Pressable>
                   </View>
 
-                  <TouchableOpacity onPress={() => deleteList(item.id)}>
+                  <TouchableOpacity onPress={() => confirmDeleteList(item.id, String(item.title ?? ''))}>
                     <Text style={styles.delete}>Delete List</Text>
                   </TouchableOpacity>
                 </>
@@ -348,6 +547,17 @@ export default function ChecklistsScreen() {
         onDismiss={dismissChallengeNotification}
         topInset={badgeToShow ? 96 : 12}
       />
+
+      {undoDelete ? (
+        <View style={styles.undoToast}>
+          <Text style={styles.undoToastText} numberOfLines={1}>
+            List deleted
+          </Text>
+          <Pressable onPress={handleUndoDelete} hitSlop={8}>
+            <Text style={[styles.undoToastAction, { color: activeTheme.primary }]}>Undo</Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -365,6 +575,50 @@ const styles = StyleSheet.create({
   createButtonText: {
     color: 'white',
     fontWeight: 'bold',
+  },
+
+  searchInput: {
+    backgroundColor: 'white',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 8,
+    fontSize: 15,
+  },
+
+  loadingIndicator: {
+    marginVertical: 12,
+  },
+
+  listContent: {
+    paddingBottom: 20,
+  },
+
+  listContentEmpty: {
+    flexGrow: 1,
+  },
+
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+
+  emptyStateTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1A1A1A',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+
+  emptyStateText: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
   },
 
   card: {
@@ -425,6 +679,11 @@ const styles = StyleSheet.create({
     color: 'gray',
   },
 
+  taskHighlight: {
+    fontWeight: '700',
+    borderRadius: 4,
+  },
+
   addRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -472,5 +731,31 @@ const styles = StyleSheet.create({
 
   cancel: {
     textAlign: 'center',
+  },
+
+  undoToast: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    bottom: 18,
+    backgroundColor: '#1F2937',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+
+  undoToastText: {
+    color: 'white',
+    fontSize: 14,
+    flex: 1,
+  },
+
+  undoToastAction: {
+    fontSize: 14,
+    fontWeight: '700',
   },
 });
