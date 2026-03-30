@@ -199,14 +199,15 @@ const styles = StyleSheet.create({
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    justifyContent: 'space-between',
   },
 
   card: {
-    width: '47%',
+    width: '48%',
     backgroundColor: 'white',
     borderRadius: 16,
     padding: 14,
+    marginBottom: 12,
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
