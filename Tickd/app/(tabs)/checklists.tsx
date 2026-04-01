@@ -41,6 +41,7 @@ import {
   type Badge,
 } from '../../constants/badges';
 import { useUserProgress } from '../../context/UserProgressContext';
+import { useAuth } from '../../context/AuthContext';
 import type { Challenge } from '../../constants/challenges';
 
 if (Platform.OS === 'android') {
@@ -48,7 +49,6 @@ if (Platform.OS === 'android') {
 }
 
 const USER_PROGRESS_REF = 'userProgress';
-const USER_PROGRESS_DOC = 'default';
 const MINIMIZED_IDS_STORAGE_KEY = 'checklists:minimizedIds';
 
 function isListComplete(list: { tasks?: { done: boolean }[] }) {
@@ -63,6 +63,8 @@ function escapeRegExp(text: string) {
 
 export default function ChecklistsScreen() {
   const { trackAction, activeTheme } = useUserProgress();
+  const { user } = useAuth();
+  const uid = user?.uid ?? '';
 
   const [lists, setLists] = useState<any[]>([]);
   const [loadingLists, setLoadingLists] = useState(true);
@@ -102,7 +104,8 @@ export default function ChecklistsScreen() {
   }
 
   useEffect(() => {
-    const q = query(collection(db, 'checklists'));
+    if (!uid) return;
+    const q = query(collection(db, 'users', uid, 'checklists'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       animate();
       const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -110,7 +113,7 @@ export default function ChecklistsScreen() {
       setLoadingLists(false);
     });
     return () => unsubscribe();
-  }, []);
+  }, [uid]);
 
   const filteredLists = useMemo(() => {
     const queryText = searchQuery.trim().toLowerCase();
@@ -136,8 +139,9 @@ export default function ChecklistsScreen() {
   }, [filteredLists]);
 
   useEffect(() => {
+    if (!uid) return;
     const loadProgress = async () => {
-      const ref = doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC);
+      const ref = doc(db, USER_PROGRESS_REF, uid);
       const snap = await getDoc(ref);
       if (snap.exists()) {
         const data = snap.data();
@@ -213,7 +217,7 @@ export default function ChecklistsScreen() {
     setCompletedListIds(newCompletedIds);
 
     await setDoc(
-      doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC),
+      doc(db, USER_PROGRESS_REF, uid),
       { completedListIds: newCompletedIds, earnedBadgeIds: updatedEarnedIds },
       { merge: true },
     );
@@ -232,7 +236,7 @@ export default function ChecklistsScreen() {
     setCompletedListIds(newCompletedIds);
 
     await setDoc(
-      doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC),
+      doc(db, USER_PROGRESS_REF, uid),
       { completedListIds: newCompletedIds, earnedBadgeIds: updatedEarnedIds },
       { merge: true },
     );
@@ -241,7 +245,7 @@ export default function ChecklistsScreen() {
   const createList = async () => {
     if (!title) return;
 
-    await addDoc(collection(db, 'checklists'), {
+    await addDoc(collection(db, 'users', uid, 'checklists'), {
       title,
       tasks: [],
       createdAt: Date.now(),
@@ -262,7 +266,7 @@ export default function ChecklistsScreen() {
     if (!list) return;
 
     const updatedTasks = [...list.tasks, { text, done: false }];
-    await updateDoc(doc(db, 'checklists', listId), { tasks: updatedTasks });
+    await updateDoc(doc(db, 'users', uid, 'checklists', listId), { tasks: updatedTasks });
     setTaskInputs((prev) => ({ ...prev, [listId]: '' }));
   };
 
@@ -273,7 +277,7 @@ export default function ChecklistsScreen() {
     const updatedTasks = list.tasks.map((t: any, i: number) =>
       i === index ? { ...t, done: !t.done } : t,
     );
-    await updateDoc(doc(db, 'checklists', listId), { tasks: updatedTasks });
+    await updateDoc(doc(db, 'users', uid, 'checklists', listId), { tasks: updatedTasks });
 
     const wasComplete = list.tasks.every((t: any) => t.done);
     const isNowComplete = updatedTasks.every((t: any) => t.done);
@@ -298,12 +302,12 @@ export default function ChecklistsScreen() {
       const updatedEarnedIds = getEarnedBadgeIdsForCompletedCount(next.length);
       setCompletedListIds(next);
       await setDoc(
-        doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC),
+        doc(db, USER_PROGRESS_REF, uid),
         { completedListIds: next, earnedBadgeIds: updatedEarnedIds },
         { merge: true },
       );
     }
-    await deleteDoc(doc(db, 'checklists', id));
+    await deleteDoc(doc(db, 'users', uid, 'checklists', id));
   };
 
   const queueDeleteList = (id: string, listTitle: string) => {

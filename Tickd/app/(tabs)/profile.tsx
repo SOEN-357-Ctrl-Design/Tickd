@@ -6,6 +6,7 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
+  TouchableOpacity,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
@@ -16,15 +17,19 @@ import {
   sameStringSet,
 } from '../../constants/badges';
 import { useUserProgress } from '../../context/UserProgressContext';
+import { useAuth } from '../../context/AuthContext';
 
 export default function ProfileScreen() {
   const { points, activeTheme } = useUserProgress();
+  const { user, signOut } = useAuth();
+  const uid = user?.uid ?? '';
   const [earnedBadgeIds, setEarnedBadgeIds] = useState<string[]>([]);
   const [completedCount, setCompletedCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const ref = doc(db, 'userProgress', 'default');
+    if (!uid) return;
+    const ref = doc(db, 'userProgress', uid);
 
     const unsubscribe = onSnapshot(ref, (snap) => {
       if (snap.exists()) {
@@ -44,7 +49,7 @@ export default function ProfileScreen() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [uid]);
 
   const earnedCount = earnedBadgeIds.length;
   const nextBadge = BADGES.find((b) => !earnedBadgeIds.includes(b.id));
@@ -124,6 +129,11 @@ export default function ProfileScreen() {
           })}
         </View>
       )}
+
+      <TouchableOpacity style={styles.signOutButton} onPress={signOut}>
+        <Ionicons name="log-out-outline" size={18} color="#E53935" />
+        <Text style={styles.signOutText}>Sign Out</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -137,6 +147,24 @@ const styles = StyleSheet.create({
   content: {
     padding: 20,
     paddingBottom: 40,
+  },
+
+  signOutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 28,
+    paddingVertical: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E53935',
+  },
+
+  signOutText: {
+    color: '#E53935',
+    fontWeight: '600',
+    fontSize: 15,
   },
 
   heading: {
