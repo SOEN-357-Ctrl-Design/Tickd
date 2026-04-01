@@ -16,6 +16,7 @@ import {
   type Challenge,
 } from '../constants/challenges';
 import { getSkinById, DEFAULT_SKIN, type Skin } from '../constants/skins';
+import { useAuth } from './AuthContext';
 
 type ProgressEntry = { count: number; periodKey: string };
 
@@ -45,9 +46,10 @@ type UserProgressContextType = {
 const UserProgressContext = createContext<UserProgressContextType | null>(null);
 
 const USER_PROGRESS_REF = 'userProgress';
-const USER_PROGRESS_DOC = 'default';
 
 export function UserProgressProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  const uid = user!.uid;
   const [data, setData] = useState<UserProgressData>({
     points: 0,
     purchasedSkins: ['default'],
@@ -64,7 +66,7 @@ export function UserProgressProvider({ children }: { children: React.ReactNode }
   }, [data]);
 
   useEffect(() => {
-    const ref = doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC);
+    const ref = doc(db, USER_PROGRESS_REF, uid);
     const unsubscribe = onSnapshot(ref, (snap) => {
       if (snap.exists()) {
         const d = snap.data();
@@ -79,7 +81,7 @@ export function UserProgressProvider({ children }: { children: React.ReactNode }
       setLoading(false);
     });
     return () => unsubscribe();
-  }, []);
+  }, [uid]);
 
   const trackAction = useCallback(async (actionKey: string): Promise<TrackResult> => {
     const current = dataRef.current;
@@ -110,7 +112,7 @@ export function UserProgressProvider({ children }: { children: React.ReactNode }
       }
     }
 
-    const ref = doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC);
+    const ref = doc(db, USER_PROGRESS_REF, uid);
     await setDoc(
       ref,
       {
@@ -122,7 +124,7 @@ export function UserProgressProvider({ children }: { children: React.ReactNode }
     );
 
     return { completedChallenges: completed, pointsEarned };
-  }, []);
+  }, [uid]);
 
   const purchaseSkin = useCallback(
     async (skinId: string): Promise<{ success: boolean; error?: string }> => {
@@ -134,7 +136,7 @@ export function UserProgressProvider({ children }: { children: React.ReactNode }
       if (current.points < skin.cost) {
         return { success: false, error: 'Not enough points' };
       }
-      const ref = doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC);
+      const ref = doc(db, USER_PROGRESS_REF, uid);
       await setDoc(
         ref,
         {
@@ -145,15 +147,15 @@ export function UserProgressProvider({ children }: { children: React.ReactNode }
       );
       return { success: true };
     },
-    [],
+    [uid],
   );
 
   const equipSkin = useCallback(async (skinId: string): Promise<void> => {
     const current = dataRef.current;
     if (!current.purchasedSkins.includes(skinId)) return;
-    const ref = doc(db, USER_PROGRESS_REF, USER_PROGRESS_DOC);
+    const ref = doc(db, USER_PROGRESS_REF, uid);
     await setDoc(ref, { equippedSkin: skinId }, { merge: true });
-  }, []);
+  }, [uid]);
 
   const activeTheme = getSkinById(data.equippedSkin) ?? DEFAULT_SKIN;
 
@@ -177,8 +179,20 @@ export function UserProgressProvider({ children }: { children: React.ReactNode }
   );
 }
 
+const FALLBACK: UserProgressContextType = {
+  points: 0,
+  purchasedSkins: ['default'],
+  equippedSkin: 'default',
+  activeTheme: DEFAULT_SKIN,
+  challengeCompletedOn: {},
+  challengeProgressOn: {},
+  loading: true,
+  trackAction: async () => ({ completedChallenges: [], pointsEarned: 0 }),
+  purchaseSkin: async () => ({ success: false, error: 'Not ready' }),
+  equipSkin: async () => {},
+};
+
 export function useUserProgress(): UserProgressContextType {
   const ctx = useContext(UserProgressContext);
-  if (!ctx) throw new Error('useUserProgress must be used within UserProgressProvider');
-  return ctx;
+  return ctx ?? FALLBACK;
 }
