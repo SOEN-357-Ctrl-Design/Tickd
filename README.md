@@ -16,5 +16,7 @@ For those commands you need the native tooling: **Xcode** (macOS only) for the i
 
 ## Test User
 For testing purposes, feel free to access the test user.
+<br>
 Email: test@test.com
+<br>
 Password: 123456
