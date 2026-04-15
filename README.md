@@ -20,3 +20,7 @@ For testing purposes, feel free to access the test user.
 Email: test@test.com
 <br>
 Password: 123456
+
+## Video
+To see the functionalities of the app, here is the link to our [Youtube video](https://youtu.be/NtqF5sbZF78)!
+
